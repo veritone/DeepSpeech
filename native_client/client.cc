@@ -24,22 +24,20 @@
 #define WORD_COUNT_WEIGHT 1.00f
 #define VALID_WORD_COUNT_WEIGHT 1.00f
 
-using namespace DeepSpeech;
-
 typedef struct {
   const char* string;
   double cpu_time_overall;
 } ds_result;
 
 ds_result
-LocalDsSTT(Model& aCtx, const short* aBuffer, size_t aBufferSize,
+LocalDsSTT(ModelState* aCtx, short* aBuffer, size_t aBufferSize,
            int aSampleRate)
 {
   ds_result res = {0};
 
   clock_t ds_start_time = clock();
 
-  res.string = aCtx.stt(aBuffer, aBufferSize, aSampleRate);
+  res.string = DS_SpeechToText(aCtx, aBuffer, aBufferSize, aSampleRate);
 
   clock_t ds_end_infer = clock();
 
@@ -162,7 +160,7 @@ GetAudioBuffer(const char* path)
 }
 
 void
-ProcessFile(Model& context, const char* path, bool show_times)
+ProcessFile(ModelState* context, const char* path, bool show_times)
 {
   ds_audio_buffer audio = GetAudioBuffer(path);
 
@@ -170,7 +168,7 @@ ProcessFile(Model& context, const char* path, bool show_times)
   // We take half of buffer_size because buffer is a char* while
   // LocalDsSTT() expected a short*
   ds_result result = LocalDsSTT(context,
-                                (const short*)audio.buffer,
+                                (short*)audio.buffer,
                                 audio.buffer_size / 2,
                                 audio.sample_rate);
   free(audio.buffer);
@@ -200,15 +198,19 @@ main(int argc, char **argv)
     printf("  AUDIO_PATH\tPath to the audio file (or directory of files) to run"
            " (any file format supported by libsox). \n");
     printf("  -t\t\tRun in benchmark mode, output mfcc & inference time\n");
-    print_versions();
+    DS_PrintVersions();
     return 1;
   }
 
   // Initialise DeepSpeech
-  Model ctx = Model(argv[1], N_CEP, N_CONTEXT, argv[2], BEAM_WIDTH);
+  ModelState* ctx;
+  int status = DS_CreateModel(argv[1], N_CEP, N_CONTEXT, argv[2], BEAM_WIDTH, &ctx);
+  if (status != 0) {
+    return 1;
+  }
 
   if (argc > 5) {
-    ctx.enableDecoderWithLM(argv[2], argv[3], argv[4], LM_WEIGHT, WORD_COUNT_WEIGHT, VALID_WORD_COUNT_WEIGHT);
+    DS_EnableDecoderWithLM(ctx, argv[2], argv[3], argv[4], LM_WEIGHT, WORD_COUNT_WEIGHT, VALID_WORD_COUNT_WEIGHT);
   }
 
   // Initialise SOX
@@ -257,6 +259,8 @@ main(int argc, char **argv)
 
   // Deinitialise and quit
   sox_quit();
+
+  DS_DestroyModel(ctx);
 
   return 0;
 }
