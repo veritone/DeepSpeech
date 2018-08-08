@@ -17,6 +17,7 @@ import tensorflow as tf
 import time
 import traceback
 import inspect
+import csv
 
 from six.moves import zip, range, filter, urllib, BaseHTTPServer
 from tensorflow.python.tools import freeze_graph
@@ -155,6 +156,7 @@ tf.app.flags.DEFINE_float   ('valid_word_count_weight', 1.00, 'valid word insert
 # Inference mode
 
 tf.app.flags.DEFINE_string  ('one_shot_infer',       '',       'one-shot inference mode: specify a wav file and the script will load the checkpoint and perform inference on it. Disables training, testing and exporting.')
+tf.app.flags.DEFINE_string ('batch_infer', '', 'same as one-shot inference mode except it takes a CSV file as input where the first column should have file names, then does the inference on all those files at once')
 
 # Initialize from frozen model
 
@@ -312,11 +314,11 @@ def initialize_globals():
     global done_dequeues
     done_dequeues = [queue.dequeue() for queue in done_queues]
 
-    if len(FLAGS.one_shot_infer) > 0:
+    if len(FLAGS.one_shot_infer) > 0 or len(FLAGS.batch_infer) > 0:
         FLAGS.train = False
         FLAGS.test = False
         FLAGS.export_dir = ''
-        if not os.path.exists(FLAGS.one_shot_infer):
+        if not os.path.exists(FLAGS.one_shot_infer) and not os.path.exists(FLAGS.batch_infer):
             log_error('Path specified in --one_shot_infer is not a valid file.')
             exit(1)
 
@@ -1786,35 +1788,75 @@ def export():
         except RuntimeError as e:
             log_error(str(e))
 
+def initialize_frozen(session):
+    with tf.gfile.FastGFile(FLAGS.initialize_from_frozen_model, 'rb') as fin:
+        graph_def = tf.GraphDef()
+        graph_def.ParseFromString(fin.read())
+
+    var_names = [v.name for v in tf.trainable_variables()]
+    var_tensors = tf.import_graph_def(graph_def, return_elements=var_names)
+
+    # build a { var_name: var_tensor } dict
+    var_tensors = dict(zip(var_names, var_tensors))
+
+    training_graph = tf.get_default_graph()
+
+    assign_ops = []
+    for name, restored_tensor in var_tensors.items():
+        training_tensor = training_graph.get_tensor_by_name(name)
+        assign_ops.append(tf.assign(training_tensor, restored_tensor))
+
+    init_from_frozen_model_op = tf.group(*assign_ops)
+
+    log_info('Initializing from frozen model: {}'.format(FLAGS.initialize_from_frozen_model))
+    session.run(init_from_frozen_model_op)
 
 def do_single_file_inference(input_file_path):
+    do_batch_file_inference([input_file_path])
+
+def do_inference_from_csv(csv_path):
+    file_paths = []
+
+    with open(csv_path, 'r') as csv_file:
+        reader = csv.reader(csv_file, delimiter=',')
+        next(reader, None) # skip the header
+        for row in reader:
+            file_paths.append(row[0])
+
+    do_batch_file_inference(file_paths)
+
+def do_batch_file_inference(input_file_paths):
     with tf.Session(config=session_config) as session:
         inputs, outputs = create_inference_graph(batch_size=1, use_new_decoder=True)
 
-        # Create a saver using variables from the above newly created graph
-        saver = tf.train.Saver(tf.global_variables())
+        if len(FLAGS.initialize_from_frozen_model) > 0:
+            initialize_frozen(session)
+        else: # from checkpoint
+            # Create a saver using variables from the above newly created graph
+            saver = tf.train.Saver(tf.global_variables())
 
-        # Restore variables from training checkpoint
-        # TODO: This restores the most recent checkpoint, but if we use validation to counterract
-        #       over-fitting, we may want to restore an earlier checkpoint.
-        checkpoint = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
-        if not checkpoint:
-            log_error('Checkpoint directory ({}) does not contain a valid checkpoint state.'.format(FLAGS.checkpoint_dir))
-            exit(1)
+            # Restore variables from training checkpoint
+            # TODO: This restores the most recent checkpoint, but if we use validation to counterract
+            #       over-fitting, we may want to restore an earlier checkpoint.
+            checkpoint = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
+            if not checkpoint:
+                log_error('Checkpoint directory ({}) does not contain a valid checkpoint state.'.format(FLAGS.checkpoint_dir))
+                exit(1)
 
-        checkpoint_path = checkpoint.model_checkpoint_path
-        saver.restore(session, checkpoint_path)
+            checkpoint_path = checkpoint.model_checkpoint_path
+            saver.restore(session, checkpoint_path)
 
-        mfcc = audiofile_to_input_vector(input_file_path, n_input, n_context)
+        for index, input_file_path in enumerate(input_file_paths):
+            mfcc = audiofile_to_input_vector(input_file_path, n_input, n_context)
 
-        output = session.run(outputs['outputs'], feed_dict = {
-            inputs['input']: [mfcc],
-            inputs['input_lengths']: [len(mfcc)],
-        })
+            output = session.run(outputs['outputs'], feed_dict = {
+                inputs['input']: [mfcc],
+                inputs['input_lengths']: [len(mfcc)],
+            })
 
-        text = ndarray_to_text(output[0][0], alphabet)
+            text = ndarray_to_text(output[0][0], alphabet)
 
-        print(text)
+            print(text)
 
 
 def main(_) :
@@ -1862,6 +1904,8 @@ def main(_) :
 
     if len(FLAGS.one_shot_infer):
         do_single_file_inference(FLAGS.one_shot_infer)
+    elif len(FLAGS.batch_infer):
+        do_inference_from_csv(FLAGS.batch_infer)
 
     # Stopping the coordinator
     COORD.stop()
