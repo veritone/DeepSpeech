@@ -44,7 +44,7 @@ model_name="$(basename "${model_source}")"
 model_name_mmap="$(basename -s ".pb" "${model_source}").pbmm"
 model_source_mmap="$(dirname "${model_source}")/${model_name_mmap}"
 
-SUPPORTED_PYTHON_VERSIONS=${SUPPORTED_PYTHON_VERSIONS:-2.7.14:ucs2 2.7.14:ucs4 3.4.8:ucs4 3.5.5:ucs4 3.6.4:ucs4 3.7.0b5:ucs4}
+SUPPORTED_PYTHON_VERSIONS=${SUPPORTED_PYTHON_VERSIONS:-2.7.14:ucs2 2.7.14:ucs4 3.4.8:ucs4 3.5.5:ucs4 3.6.4:ucs4 3.7.0:ucs4}
 SUPPORTED_NODEJS_VERSIONS=${SUPPORTED_NODEJS_VERSIONS:-4.9.1 5.12.0 6.14.1 7.10.1 8.11.1 9.11.1 10.3.0}
 
 # This verify exact inference result
@@ -199,7 +199,7 @@ assert_correct_ldc93s1_somodel()
 
 assert_correct_warning_upsampling()
 {
-  assert_shows_something "$1" "is lower than 16kHz. Up-sampling might produce erratic speech recognition"
+  assert_shows_something "$1" "erratic speech recognition"
 }
 
 assert_tensorflow_version()
@@ -218,40 +218,40 @@ check_tensorflow_version()
 
 run_all_inference_tests()
 {
-  phrase_pbmodel_nolm=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
+  phrase_pbmodel_nolm=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
   assert_correct_ldc93s1 "${phrase_pbmodel_nolm}"
 
-  phrase_pbmodel_nolm=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
+  phrase_pbmodel_nolm=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
   assert_correct_ldc93s1 "${phrase_pbmodel_nolm}"
 
-  phrase_pbmodel_withlm=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
+  phrase_pbmodel_withlm=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
   assert_correct_ldc93s1 "${phrase_pbmodel_withlm}"
 
-  phrase_pbmodel_nolm_stereo_44k=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_2_44100.wav)
+  phrase_pbmodel_nolm_stereo_44k=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_2_44100.wav)
   assert_correct_ldc93s1 "${phrase_pbmodel_nolm_stereo_44k}"
 
-  phrase_pbmodel_withlm_stereo_44k=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_2_44100.wav)
+  phrase_pbmodel_withlm_stereo_44k=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_2_44100.wav)
   assert_correct_ldc93s1 "${phrase_pbmodel_withlm_stereo_44k}"
 
-  phrase_pbmodel_nolm_mono_8k=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_1_8000.wav 2>&1 1>/dev/null)
+  phrase_pbmodel_nolm_mono_8k=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_1_8000.wav 2>&1 1>/dev/null)
   assert_correct_warning_upsampling "${phrase_pbmodel_nolm_mono_8k}"
 
-  phrase_pbmodel_withlm_mono_8k=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_1_8000.wav 2>&1 1>/dev/null)
+  phrase_pbmodel_withlm_mono_8k=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_1_8000.wav 2>&1 1>/dev/null)
   assert_correct_warning_upsampling "${phrase_pbmodel_withlm_mono_8k}"
 
   if [ "${aot_model}" = "--aot" ]; then
-      phrase_somodel_nolm=$(deepspeech "" ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
-      phrase_somodel_withlm=$(deepspeech "" ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie  ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
+      phrase_somodel_nolm=$(deepspeech --model "" --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
+      phrase_somodel_withlm=$(deepspeech --model "" --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
 
       assert_correct_ldc93s1_somodel "${phrase_somodel_nolm}" "${phrase_somodel_withlm}"
 
-      phrase_somodel_nolm_stereo_44k=$(deepspeech "" ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_2_44100.wav)
-      phrase_somodel_withlm_stereo_44k=$(deepspeech "" ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie  ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_2_44100.wav)
+      phrase_somodel_nolm_stereo_44k=$(deepspeech --model "" --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_2_44100.wav)
+      phrase_somodel_withlm_stereo_44k=$(deepspeech --model "" --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_2_44100.wav)
 
       assert_correct_ldc93s1_somodel "${phrase_somodel_nolm_stereo_44k}" "${phrase_somodel_withlm_stereo_44k}"
 
-      phrase_somodel_nolm_mono_8k=$(deepspeech "" ${TASKCLUSTER_TMP_DIR}/alphabet.txt  ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_1_8000.wav 2>&1 1>/dev/null)
-      phrase_somodel_withlm_stereo_44k=$(deepspeech "" ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_1_8000.wav 2>&1 1>/dev/null)
+      phrase_somodel_nolm_mono_8k=$(deepspeech --model "" --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_1_8000.wav 2>&1 1>/dev/null)
+      phrase_somodel_withlm_stereo_44k=$(deepspeech --model "" --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_1_8000.wav 2>&1 1>/dev/null)
 
       assert_correct_warning_upsampling "${phrase_somodel_nolm_mono_8k}" "${phrase_somodel_withlm_mono_8k}"
   fi;
@@ -259,25 +259,25 @@ run_all_inference_tests()
 
 run_prod_inference_tests()
 {
-  phrase_pbmodel_withlm=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
+  phrase_pbmodel_withlm=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
   assert_correct_ldc93s1_prodmodel_v1 "${phrase_pbmodel_withlm}"
 
-  phrase_pbmodel_withlm=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
+  phrase_pbmodel_withlm=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1.wav)
   assert_correct_ldc93s1_prodmodel_v2 "${phrase_pbmodel_withlm}"
 
-  phrase_pbmodel_withlm_stereo_44k=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_2_44100.wav)
+  phrase_pbmodel_withlm_stereo_44k=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_2_44100.wav)
   assert_working_ldc93s1_prodmodel "${phrase_pbmodel_withlm_stereo_44k}"
 
-  phrase_pbmodel_withlm_mono_8k=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_1_8000.wav 2>&1 1>/dev/null)
+  phrase_pbmodel_withlm_mono_8k=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name_mmap} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/LDC93S1_pcms16le_1_8000.wav 2>&1 1>/dev/null)
   assert_correct_warning_upsampling "${phrase_pbmodel_withlm_mono_8k}"
 }
 
 run_multi_inference_tests()
 {
-  multi_phrase_pbmodel_nolm=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/ | tr '\n' '%')
+  multi_phrase_pbmodel_nolm=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --audio ${TASKCLUSTER_TMP_DIR}/ | tr '\n' '%')
   assert_correct_multi_ldc93s1 "${multi_phrase_pbmodel_nolm}"
 
-  multi_phrase_pbmodel_withlm=$(deepspeech ${TASKCLUSTER_TMP_DIR}/${model_name} ${TASKCLUSTER_TMP_DIR}/alphabet.txt ${TASKCLUSTER_TMP_DIR}/lm.binary ${TASKCLUSTER_TMP_DIR}/trie ${TASKCLUSTER_TMP_DIR}/ | tr '\n' '%')
+  multi_phrase_pbmodel_withlm=$(deepspeech --model ${TASKCLUSTER_TMP_DIR}/${model_name} --alphabet ${TASKCLUSTER_TMP_DIR}/alphabet.txt --lm ${TASKCLUSTER_TMP_DIR}/lm.binary --trie ${TASKCLUSTER_TMP_DIR}/trie --audio ${TASKCLUSTER_TMP_DIR}/ | tr '\n' '%')
   assert_correct_multi_ldc93s1 "${multi_phrase_pbmodel_withlm}"
 }
 
@@ -323,6 +323,11 @@ download_data()
   cp ${DS_ROOT_TASK}/DeepSpeech/ds/data/smoke_test/vocab.trie ${TASKCLUSTER_TMP_DIR}/trie
 }
 
+download_for_frozen()
+{
+  wget -O "${TASKCLUSTER_TMP_DIR}/frozen_model.pb" "${DEEPSPEECH_TEST_MODEL}"
+}
+
 download_material()
 {
   target_dir=$1
@@ -348,7 +353,7 @@ install_pyenv()
 
   git clone --quiet https://github.com/pyenv/pyenv.git ${PYENV_ROOT}
   pushd ${PYENV_ROOT}
-    git checkout --quiet 8eeddaebc1153313010724f81917a96d62dc4e2a
+    git checkout --quiet c057a80c8296a7c694e4ef80ecbac0d0c169df7a
   popd
   eval "$(pyenv init -)"
 }
@@ -511,8 +516,8 @@ maybe_ssl102_py37()
                 PY37_OPENSSL_DIR=${DS_ROOT_TASK}/ssl-xenial
                 mkdir -p ${PY37_OPENSSL_DIR}
                 wget -P ${TASKCLUSTER_TMP_DIR} \
-                        http://${TASKCLUSTER_WORKER_GROUP}.ec2.archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl-dev_1.0.2g-1ubuntu4.12_amd64.deb \
-                        http://${TASKCLUSTER_WORKER_GROUP}.ec2.archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.0.0_1.0.2g-1ubuntu4.12_amd64.deb
+                        http://${TASKCLUSTER_WORKER_GROUP}.ec2.archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl-dev_1.0.2g-1ubuntu4.13_amd64.deb \
+                        http://${TASKCLUSTER_WORKER_GROUP}.ec2.archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.0.0_1.0.2g-1ubuntu4.13_amd64.deb
 
                 for deb in ${TASKCLUSTER_TMP_DIR}/libssl*.deb; do
                     dpkg -x ${deb} ${PY37_OPENSSL_DIR}
@@ -529,9 +534,8 @@ maybe_ssl102_py37()
                 export PY37_LDPATH="${PY37_OPENSSL_DIR}/usr/lib/"
             fi;
 
-            # TODO: Temporary workaround because no py37m numpy wheel and we
-            # want to be able to test that.
-            export PY37_SOURCE_PACKAGE="--extra-index-url https://lissyx.github.io/deepspeech-python-wheels/"
+	    export NUMPY_BUILD_VERSION="==1.14.5"
+	    export NUMPY_DEP_VERSION=">=1.14.5"
         ;;
     esac
 }
@@ -559,6 +563,9 @@ do_deepspeech_python_build()
     pyver=$(echo "${pyver_conf}" | cut -d':' -f1)
     pyconf=$(echo "${pyver_conf}" | cut -d':' -f2)
 
+    export NUMPY_BUILD_VERSION="==1.7.0"
+    export NUMPY_DEP_VERSION=">=1.7.0"
+
     maybe_ssl102_py37 ${pyver}
 
     LD_LIBRARY_PATH=${PY37_LDPATH}:$LD_LIBRARY_PATH PYTHON_CONFIGURE_OPTS="--enable-unicode=${pyconf} ${PY37_OPENSSL}" pyenv install ${pyver}
@@ -581,6 +588,9 @@ do_deepspeech_python_build()
     cp native_client/dist/*.whl wheels
 
     make -C native_client/ bindings-clean
+
+    unset NUMPY_BUILD_VERSION
+    unset NUMPY_DEP_VERSION
 
     deactivate
     pyenv uninstall --force deepspeech
