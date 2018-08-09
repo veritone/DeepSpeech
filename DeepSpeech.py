@@ -18,6 +18,7 @@ import time
 import traceback
 import inspect
 import csv
+import json
 
 from six.moves import zip, range, filter, urllib, BaseHTTPServer
 from tensorflow.python.tools import freeze_graph
@@ -157,6 +158,8 @@ tf.app.flags.DEFINE_float   ('valid_word_count_weight', 1.00, 'valid word insert
 
 tf.app.flags.DEFINE_string  ('one_shot_infer',       '',       'one-shot inference mode: specify a wav file and the script will load the checkpoint and perform inference on it. Disables training, testing and exporting.')
 tf.app.flags.DEFINE_string ('batch_infer', '', 'same as one-shot inference mode except it takes a CSV file as input where the first column should have file names, then does the inference on all those files at once')
+
+tf.app.flags.DEFINE_string ('timestamps', '', 'Include timestamps in inference output, output dir to save to')
 
 # Initialize from frozen model
 
@@ -1730,13 +1733,21 @@ def create_inference_graph(batch_size=None, use_new_decoder=False):
     decoded = tf.convert_to_tensor(
         [tf.sparse_tensor_to_dense(sparse_tensor) for sparse_tensor in decoded], name='output_node')
 
+    if len(FLAGS.timestamps) > 0:
+        intermediate, _ = tf.nn.ctc_beam_search_decoder(logits, seq_length, merge_repeated=False, beam_width=FLAGS.beam_width)
+        intermediate = tf.convert_to_tensor(
+            [tf.sparse_tensor_to_dense(sparse_tensor) for sparse_tensor in intermediate], name='intermediate_node')
+        results = (decoded, intermediate, tf.sigmoid(logits))
+    else:
+        results = decoded
+
     return (
         {
             'input': input_tensor,
             'input_lengths': seq_length,
         },
         {
-            'outputs': decoded,
+            'outputs': results,
         }
     )
 
@@ -1853,11 +1864,183 @@ def do_batch_file_inference(input_file_paths):
                 inputs['input']: [mfcc],
                 inputs['input_lengths']: [len(mfcc)],
             })
+            if len(FLAGS.timestamps) > 0:
+                ## get the basefile name of  the input_file_path, e.g  from /tmp/mysimple.wav --> mysimple
+                ## so that we can use it for the json
+                base_filename = os.path.splitext(os.path.basename(input_file_path))[0]
 
-            text = ndarray_to_text(output[0][0], alphabet)
+                segment_duration = 20  # This works for 16000 Hz, but needs to be changed to work in general
 
-            print(text)
+                text = ndarray_to_text(output[0][0][0], alphabet)
+                intermediate = ndarray_to_text(output[1][0][0], alphabet)
 
+                predict_list = ([], [])
+                for index, segment in enumerate(output[2]):
+                    prediction = np.argmax(segment[0])
+                    if (prediction != alphabet.size()):  # Skip CTC blank labels
+                        predict_list[0].append(np.argmax(segment[0]))
+                        predict_list[1].append(index * segment_duration)
+                predict_list[1].append(len(output[2]) * segment_duration)
+
+                raw = ndarray_to_text(predict_list[0], alphabet)
+
+                print(raw)
+                print(intermediate)
+                print(text)
+                print()
+
+                output = {}
+                word_index = 0
+
+                # First pass compare raw to post CTC
+                first_result = compare_strings(raw, intermediate)
+                #print(first_result)
+                maps = parse_sclite_result(first_result, raw, intermediate)
+                time_list = [0] * (len(intermediate) + 1)
+                for refs, hyps in maps:
+                    if len(refs) > 1: # deletions
+                        start = refs[0][1]
+                        end = refs[-1][2]
+                        start_time = predict_list[1][start]
+                        end_time = predict_list[1][end]
+                        time_list[hyps[0][1]] = start_time
+                        time_list[hyps[0][2]] = end_time
+                    elif len(hyps) > 1: # insertions
+                        # super crude method, change this later
+                        overall_start = predict_list[1][refs[0][1]]
+                        overall_end = predict_list[1][refs[0][2]]
+                        interval = (overall_end - overall_start) / len(hyps)
+                        start_time = overall_start
+                        for hyp in hyps:
+                            end_time = start_time + interval
+                            time_list[hyp[1]] = start_time
+                            time_list[hyp[2]] = end_time
+                            start_time = end_time
+                    else: # simple one-to-one case
+                        start = refs[0][1]
+                        end = refs[0][2]
+                        start_time = predict_list[1][start]
+                        end_time = predict_list[1][end]
+                        time_list[hyps[0][1]] = start_time
+                        time_list[hyps[0][2]] = end_time
+
+                # Second pass compare pre and post language model
+                second_result = compare_strings(intermediate, text)
+                maps = parse_sclite_result(second_result, intermediate, text)
+                for refs, hyps in maps:
+                    if len(refs) > 1: # deletions
+                        word = hyps[0][0]
+                        start = refs[0][1]
+                        end = refs[-1][2]
+                        #start_time = predict_list[1][start]
+                        #end_time = predict_list[1][end]
+                        start_time = time_list[start]
+                        end_time = time_list[end]
+                        output = add_timestamp_result(output, word, word_index, start_time, end_time)
+                        word_index += 1
+                    elif len(hyps) > 1: # insertions
+                        # super crude method, change this later
+                        #overall_start = predict_list[1][refs[0][1]]
+                        #overall_end = predict_list[1][refs[0][2]]
+                        overall_start = time_list[refs[0][1]]
+                        overall_end = time_list[refs[0][2]]
+                        interval = (overall_end - overall_start) / len(hyps)
+                        start_time = overall_start
+                        for hyp in hyps:
+                            word = hyp[0]
+                            end_time = start_time + interval
+                            output = add_timestamp_result(output, word, word_index, start_time, end_time)
+                            start_time = end_time
+                            word_index += 1
+                    else: # simple one-to-one case
+                        word = hyps[0][0]
+                        start = refs[0][1]
+                        end = refs[0][2]
+                        #start_time = predict_list[1][start]
+                        #end_time = predict_list[1][end]
+                        start_time = time_list[start]
+                        end_time = time_list[end]
+                        output = add_timestamp_result(output, word, word_index, start_time, end_time)
+                        word_index += 1
+
+                json_out = json.dumps(output)
+                json_out_file = FLAGS.timestamps + "/" + base_filename + ".json"
+                with open(json_out_file, "w") as out_file:
+                    out_file.write(json_out)
+            else:
+                text = ndarray_to_text(output[0][0], alphabet)
+
+                print(text)
+
+def compare_strings(ref, hyp):
+    with open('/tmp/ref', 'w') as ref_file:
+        ref_file.write(ref)
+        ref_file.write(" (trans_0001)\n")
+
+    with open('/tmp/hyp', 'w') as hyp_file:
+        hyp_file.write(hyp)
+        hyp_file.write(" (trans_0001)\n")
+
+    result = subprocess.check_output(['sclite', '-r', '/tmp/ref', '-h', '/tmp/hyp', '-p', '-o', 'pra', '-i', 'rm'])
+
+    return result.decode("utf-8")
+
+def parse_sclite_result(result, ref_string, hyp_string):
+    ref_index = 0
+    hyp_index = 0
+
+    result_map = []
+
+    results = result.split("\n")
+    inserted = []
+    deleted = []
+    for index, line in enumerate(results):
+        if line == "C" or line == "S": # correct or substitution
+            ref_word = results[index+1].replace('"', '')
+            hyp_word = results[index+2].replace('"', '')
+            ref_index = ref_string.find(ref_word, ref_index)
+            hyp_index = hyp_string.find(hyp_word, hyp_index)
+            if inserted:
+                inserted.append((hyp_word, hyp_index, hyp_index + len(hyp_word)))
+                ref = [(ref_word, ref_index, ref_index + len(ref_word))]
+
+                result_map.append((ref, inserted))
+
+                inserted = []
+            elif deleted:
+                deleted.append((ref_word, ref_index, ref_index + len(ref_word)))
+                hyp = [(hyp_word, hyp_index, hyp_index + len(hyp_word))]
+
+                result_map.append((deleted, hyp))
+
+                deleted = []
+            else:
+                hyp = [(hyp_word, hyp_index, hyp_index + len(hyp_word))]
+                ref = [(ref_word, ref_index, ref_index + len(ref_word))]
+
+                result_map.append((ref, hyp))
+
+            ref_index += len(ref_word)
+            hyp_index += len(hyp_word)
+        elif line == "I": # insertion
+            hyp_word = results[index+2].replace('"', '')
+            hyp_index = hyp_string.find(hyp_word, hyp_index)
+            inserted.append((hyp_word, hyp_index, hyp_index + len(hyp_word)))
+            hyp_index += len(hyp_word)
+        elif line == "D": # deletion
+            ref_word = results[index+1].replace('"', '')
+            ref_index = ref_string.find(ref_word, ref_index)
+            deleted.append((ref_word, ref_index, ref_index + len(ref_word)))
+            ref_index += len(ref_word)
+
+    return result_map
+
+def add_timestamp_result(output, word, word_index, start_time, end_time):
+    output[str(word_index)] = {"index": word_index, "startTimeMs": start_time, "stopTimeMs": end_time,
+                               "durationMs": end_time - start_time, "words": [
+            {"word": word, "confidence": 1000, "bestPathForward": True, "bestPathBackward": True,
+             "spanningForward": False, "spanningBackward": False, "spanningLength": 1}]}
+    return output
 
 def main(_) :
 
