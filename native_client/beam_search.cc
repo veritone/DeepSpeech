@@ -24,6 +24,8 @@ limitations under the License.
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/kernels/bounds_check.h"
 
+#include "beam_search_decoder_with_word_probs.h"
+
 namespace tf = tensorflow;
 using tf::shape_inference::DimensionHandle;
 using tf::shape_inference::InferenceContext;
@@ -36,7 +38,7 @@ REGISTER_OP("CTCBeamSearchDecoderWithLM")
     .Attr("trie_path: string")
     .Attr("alphabet_path: string")
     .Attr("lm_weight: float")
-    .Attr("word_count_weight: float")
+    .Attr("out_of_vocab_score: float = -10")
     .Attr("valid_word_count_weight: float")
     .Attr("beam_width: int >= 1 = 100")
     .Attr("top_paths: int >= 1 = 1")
@@ -45,6 +47,7 @@ REGISTER_OP("CTCBeamSearchDecoderWithLM")
     .Output("decoded_values: top_paths * int64")
     .Output("decoded_shape: top_paths * int64")
     .Output("log_probability: float")
+    .Output("decoded_word_log_probs: top_paths * float")
     .SetShapeFn([](InferenceContext *c) {
       ShapeHandle inputs;
       ShapeHandle sequence_length;
@@ -73,6 +76,10 @@ REGISTER_OP("CTCBeamSearchDecoderWithLM")
         c->set_output(out_idx++, shape_v);
       }
       c->set_output(out_idx++, c->Matrix(batch_size, top_paths));
+      c->set_output(out_idx++, c->Matrix(batch_size, top_paths));
+      for (int i = 0; i < top_paths; ++i) {  // word log probs
+        c->set_output(out_idx++, c->Vector(InferenceContext::kUnknownDim));
+      }
       return tf::Status::OK();
     })
     .Doc(R"doc(
@@ -90,7 +97,6 @@ model_path: A string containing the path to the KenLM model file to use.
 trie_path: A string containing the path to the trie file built from the vocabulary.
 alphabet_path: A string containing the path to the alphabet file (see alphabet.h).
 lm_weight: alpha hyperparameter of CTC decoder. LM weight.
-word_count_weight: beta hyperparameter of CTC decoder. Word insertion weight.
 valid_word_count_weight: beta' hyperparameter of CTC decoder. Valid word insertion weight.
 beam_width: A scalar >= 0 (beam search beam width).
 top_paths: A scalar >= 0, <= beam_width (controls output size).
@@ -116,10 +122,18 @@ class CTCDecodeHelper {
   void SetTopPaths(int tp) { top_paths_ = tp; }
 
   tf::Status ValidateInputsGenerateOutputs(
-      tf::OpKernelContext *ctx, const tf::Tensor **inputs, const tf::Tensor **seq_len,
-      std::string *model_path, std::string *trie_path, std::string *alphabet_path,
-      tf::Tensor **log_prob, tf::OpOutputList *decoded_indices,
-      tf::OpOutputList *decoded_values, tf::OpOutputList *decoded_shape) const {
+      tf::OpKernelContext *ctx,
+      const tf::Tensor **inputs,
+      const tf::Tensor **seq_len,
+      std::string *model_path,
+      std::string *trie_path,
+      std::string *alphabet_path,
+      tf::Tensor **log_prob,
+      tf::OpOutputList *decoded_indices,
+      tf::OpOutputList *decoded_values,
+      tf::OpOutputList *decoded_shape,
+      tf::OpOutputList *decoded_word_log_probs
+    ) const {
     tf::Status status = ctx->input("inputs", inputs);
     if (!status.ok()) return status;
     status = ctx->input("sequence_length", seq_len);
@@ -166,6 +180,8 @@ class CTCDecodeHelper {
     if (!s.ok()) return s;
     s = ctx->output_list("decoded_shape", decoded_shape);
     if (!s.ok()) return s;
+    s = ctx->output_list("decoded_word_log_probs", decoded_word_log_probs);
+    if (!s.ok()) return s;
 
     return tf::Status::OK();
   }
@@ -173,11 +189,15 @@ class CTCDecodeHelper {
   // sequences[b][p][ix] stores decoded value "ix" of path "p" for batch "b".
   tf::Status StoreAllDecodedSequences(
       const std::vector<std::vector<std::vector<int>>> &sequences,
-      tf::OpOutputList *decoded_indices, tf::OpOutputList *decoded_values,
-      tf::OpOutputList *decoded_shape) const {
+      const std::vector<std::vector<std::vector<float>>> &word_log_probs,
+      tf::OpOutputList *decoded_indices,
+      tf::OpOutputList *decoded_values,
+      tf::OpOutputList *decoded_shape,
+      tf::OpOutputList *decoded_word_log_probs) const {
     // Calculate the total number of entries for each path
     const tf::int64 batch_size = sequences.size();
     std::vector<tf::int64> num_entries(top_paths_, 0);
+    std::vector<tf::int64> num_words_in_path(top_paths_, 0);
 
     // Calculate num_entries per path
     for (const auto &batch_s : sequences) {
@@ -187,12 +207,22 @@ class CTCDecodeHelper {
       }
     }
 
+    for (const auto &batch_s : word_log_probs) {
+        CHECK_EQ(batch_s.size(), top_paths_);
+        for (int p = 0; p < top_paths_; ++p) {
+            num_words_in_path[p] = batch_s[p].size();
+        }
+    }
+
     for (int p = 0; p < top_paths_; ++p) {
       tf::Tensor *p_indices = nullptr;
       tf::Tensor *p_values = nullptr;
       tf::Tensor *p_shape = nullptr;
+      tf::Tensor *p_word_log_probs = nullptr;
 
       const tf::int64 p_num = num_entries[p];
+      const tf::int64 p_num_words = num_words_in_path[p];
+      LOG(INFO) << "# words: " << p_num_words;
 
       tf::Status s =
           decoded_indices->allocate(p, tf::TensorShape({p_num, 2}), &p_indices);
@@ -201,10 +231,13 @@ class CTCDecodeHelper {
       if (!s.ok()) return s;
       s = decoded_shape->allocate(p, tf::TensorShape({2}), &p_shape);
       if (!s.ok()) return s;
+      s = decoded_word_log_probs->allocate(p, tf::TensorShape({p_num_words}), &p_word_log_probs);
+      if (!s.ok()) return s;
 
       auto indices_t = p_indices->matrix<tf::int64>();
       auto values_t = p_values->vec<tf::int64>();
       auto shape_t = p_shape->vec<tf::int64>();
+      auto word_log_probs_t = p_word_log_probs->vec<float>();
 
       tf::int64 max_decoded = 0;
       tf::int64 offset = 0;
@@ -219,6 +252,13 @@ class CTCDecodeHelper {
           indices_t(offset, 1) = t;
         }
       }
+
+        for (tf::int64 b = 0; b < batch_size; ++b) {
+            auto &p_batch = word_log_probs[b][p];
+            tf::int64 num_words_in_path = p_batch.size();
+
+            std::copy_n(p_batch.begin(), num_words_in_path, &word_log_probs_t(0));
+        }
 
       shape_t(0) = batch_size;
       shape_t(1) = max_decoded;
@@ -239,7 +279,7 @@ class CTCBeamSearchDecoderWithLMOp : public tf::OpKernel {
                    GetTriePath(ctx),
                    GetAlphabetPath(ctx),
                    GetLMWeight(ctx),
-                   GetWordCountWeight(ctx),
+                   GetOutOfVocabularyScore(ctx),
                    GetValidWordCountWeight(ctx))
   {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("merge_repeated", &merge_repeated_));
@@ -259,10 +299,22 @@ class CTCBeamSearchDecoderWithLMOp : public tf::OpKernel {
     tf::OpOutputList decoded_indices;
     tf::OpOutputList decoded_values;
     tf::OpOutputList decoded_shape;
-    OP_REQUIRES_OK(ctx, decode_helper_.ValidateInputsGenerateOutputs(
-                            ctx, &inputs, &seq_len, &model_path, &trie_path,
-                            &alphabet_path, &log_prob, &decoded_indices,
-                            &decoded_values, &decoded_shape));
+    tf::OpOutputList decoded_word_log_probabilities;
+    OP_REQUIRES_OK(ctx,
+       decode_helper_.ValidateInputsGenerateOutputs(
+         ctx,
+         &inputs,
+         &seq_len,
+         &model_path,
+         &trie_path,
+         &alphabet_path,
+         &log_prob,
+         &decoded_indices,
+         &decoded_values,
+         &decoded_shape,
+         &decoded_word_log_probabilities
+     )
+    );
 
     auto inputs_t = inputs->tensor<float, 3>();
     auto seq_len_t = seq_len->vec<tf::int32>();
@@ -287,19 +339,27 @@ class CTCBeamSearchDecoderWithLMOp : public tf::OpKernel {
                                 batch_size, num_classes);
     }
 
-    tf::ctc::CTCBeamSearchDecoder<KenLMBeamState> beam_search(num_classes, beam_width_,
-                                            &beam_scorer_, 1 /* batch_size */,
-                                            merge_repeated_);
+    tensorflow::ctc::BeamSearchDecoderWithWordProbs<KenLMBeamState> beam_search(
+      num_classes,
+      beam_width_,
+      &beam_scorer_,
+      1 /* batch_size */,
+      merge_repeated_
+    );
     tf::Tensor input_chip(tf::DT_FLOAT, tf::TensorShape({num_classes}));
     auto input_chip_t = input_chip.flat<float>();
 
     std::vector<std::vector<std::vector<int>>> best_paths(batch_size);
     std::vector<float> log_probs;
+    std::vector<std::vector<std::vector<float>>> word_log_probs(batch_size);
 
     // Assumption: the blank index is num_classes - 1
     for (int b = 0; b < batch_size; ++b) {
       auto &best_paths_b = best_paths[b];
       best_paths_b.resize(decode_helper_.GetTopPaths());
+      auto &word_log_probs_b = word_log_probs[b];
+      word_log_probs_b.resize(decode_helper_.GetTopPaths());
+
       for (int t = 0; t < seq_len_t(b); ++t) {
         input_chip_t = input_list_t[t].chip(b, 0);
         auto input_bi =
@@ -307,8 +367,15 @@ class CTCBeamSearchDecoderWithLMOp : public tf::OpKernel {
         beam_search.Step(input_bi);
       }
       OP_REQUIRES_OK(
-          ctx, beam_search.TopPaths(decode_helper_.GetTopPaths(), &best_paths_b,
-                                    &log_probs, merge_repeated_));
+          ctx,
+          beam_search.TopPaths(
+            decode_helper_.GetTopPaths(),
+            &best_paths_b,
+            &log_probs,
+            &word_log_probs_b,
+            merge_repeated_
+          )
+      );
 
       beam_search.Reset();
 
@@ -317,9 +384,17 @@ class CTCBeamSearchDecoderWithLMOp : public tf::OpKernel {
       }
     }
 
-    OP_REQUIRES_OK(ctx, decode_helper_.StoreAllDecodedSequences(
-                            best_paths, &decoded_indices, &decoded_values,
-                            &decoded_shape));
+      OP_REQUIRES_OK(
+         ctx,
+         decode_helper_.StoreAllDecodedSequences(
+           best_paths,
+           word_log_probs,
+           &decoded_indices,
+           &decoded_values,
+           &decoded_shape,
+           &decoded_word_log_probabilities
+         )
+      );
   }
 
  private:
@@ -353,10 +428,10 @@ class CTCBeamSearchDecoderWithLMOp : public tf::OpKernel {
     return lm_weight;
   }
 
-  float GetWordCountWeight(tf::OpKernelConstruction *ctx) {
-    float word_count_weight;
-    ctx->GetAttr("word_count_weight", &word_count_weight);
-    return word_count_weight;
+  float GetOutOfVocabularyScore(tf::OpKernelConstruction *ctx) {
+    float oov_score;
+    ctx->GetAttr("out_of_vocab_score", &oov_score);
+    return oov_score;
   }
 
   float GetValidWordCountWeight(tf::OpKernelConstruction *ctx) {

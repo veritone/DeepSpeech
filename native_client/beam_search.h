@@ -5,36 +5,35 @@
 #include "trie_node.h"
 
 #include "tensorflow/core/util/ctc/ctc_beam_search.h"
+#include "tensorflow/core/platform/logging.h"
 
 #include "kenlm/lm/model.hh"
 
-typedef lm::ngram::ProbingModel Model;
+#include "kenlm_beam_state.h"
 
-struct KenLMBeamState {
-  float language_model_score;
-  float score;
-  float delta_score;
-  std::string incomplete_word;
-  TrieNode *incomplete_word_trie_node;
-  Model::State model_state;
-};
+typedef lm::ngram::ProbingModel Model;
 
 class KenLMBeamScorer : public tensorflow::ctc::BaseBeamScorer<KenLMBeamState> {
  public:
-  KenLMBeamScorer(const std::string &kenlm_path, const std::string &trie_path,
-                  const std::string &alphabet_path, float lm_weight,
-                  float word_count_weight, float valid_word_count_weight)
+  KenLMBeamScorer(
+    const std::string &kenlm_path,
+    const std::string &trie_path,
+    const std::string &alphabet_path,
+    float lm_weight,
+    float oov_score,
+    float valid_word_count_weight
+  )
     : model_(kenlm_path.c_str(), GetLMConfig())
     , alphabet_(alphabet_path.c_str())
     , lm_weight_(lm_weight)
-    , word_count_weight_(word_count_weight)
+    , oov_score_(oov_score)
     , valid_word_count_weight_(valid_word_count_weight)
   {
     std::ifstream in(trie_path, std::ios::in);
     TrieNode::ReadFromStream(in, trieRoot_, alphabet_.GetSize());
 
     Model::State out;
-    oov_score_ = model_.FullScore(model_.NullContextState(), model_.GetVocabulary().NotFound(), out).prob;
+    LOG(INFO) << "default OOV score: " << oov_score_;
   }
 
   virtual ~KenLMBeamScorer() {
@@ -85,8 +84,10 @@ class KenLMBeamScorer : public tensorflow::ctc::BaseBeamScorer<KenLMBeamState> {
       if (!IsOOV(to_state->incomplete_word)) {
         to_state->language_model_score += valid_word_count_weight_;
       }
-      to_state->language_model_score += word_count_weight_;
       UpdateWithLMScore(to_state, lm_score_delta);
+      // After being updated with an LM score, keep track of the chosen word + its score.
+      to_state->prev_words.push_back(to_state->incomplete_word);
+      to_state->prev_word_probs.push_back(lm_score_delta);
       ResetIncompleteWord(to_state);
     }
   }
@@ -132,10 +133,6 @@ class KenLMBeamScorer : public tensorflow::ctc::BaseBeamScorer<KenLMBeamState> {
     this->lm_weight_ = lm_weight;
   }
 
-  void SetWordCountWeight(float word_count_weight) {
-    this->word_count_weight_ = word_count_weight;
-  }
-
   void SetValidWordCountWeight(float valid_word_count_weight) {
     this->valid_word_count_weight_ = valid_word_count_weight;
   }
@@ -145,7 +142,6 @@ class KenLMBeamScorer : public tensorflow::ctc::BaseBeamScorer<KenLMBeamState> {
   Alphabet alphabet_;
   TrieNode *trieRoot_;
   float lm_weight_;
-  float word_count_weight_;
   float valid_word_count_weight_;
   float oov_score_;
 
@@ -186,6 +182,8 @@ class KenLMBeamScorer : public tensorflow::ctc::BaseBeamScorer<KenLMBeamState> {
     to->incomplete_word = from.incomplete_word;
     to->incomplete_word_trie_node = from.incomplete_word_trie_node;
     to->model_state = from.model_state;
+    to->prev_words = std::vector<std::string>(from.prev_words);
+    to->prev_word_probs = std::vector<float>(from.prev_word_probs);
   }
 };
 

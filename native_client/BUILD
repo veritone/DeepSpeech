@@ -54,12 +54,29 @@ genrule(
 
 tf_cc_shared_object(
     name = "libdeepspeech.so",
-    srcs = ["deepspeech.cc", "deepspeech.h", "deepspeech_utils.h", "alphabet.h", "beam_search.h", "trie_node.h", "ds_version.h"] +
-           if_native_model(["deepspeech_model_core.h"]) +
-           glob(["kenlm/lm/*.cc", "kenlm/util/*.cc", "kenlm/util/double-conversion/*.cc",
-                 "kenlm/lm/*.hh", "kenlm/util/*.hh", "kenlm/util/double-conversion/*.h"],
-                exclude = ["kenlm/*/*test.cc", "kenlm/*/*main.cc"]) +
-           glob(["boost_locale/**/*.hpp"]),
+    srcs = [
+        "deepspeech.cc",
+        "deepspeech.h",
+        "deepspeech_utils.h",
+        "alphabet.h",
+        "beam_search.h",
+        "kenlm_beam_state.h",
+        "trie_node.h",
+        "ds_version.h"
+    ] + if_native_model(["deepspeech_model_core.h"]) +
+    glob([
+        "kenlm/lm/*.cc",
+        "kenlm/util/*.cc",
+        "kenlm/util/double-conversion/*.cc",
+        "kenlm/lm/*.hh",
+        "kenlm/util/*.hh",
+        "kenlm/util/double-conversion/*.h"
+    ],
+    exclude = [
+        "kenlm/*/*test.cc",
+        "kenlm/*/*main.cc"
+    ]) +
+    glob(["boost_locale/**/*.hpp"]),
     # -Wno-sign-compare to silent a lot of warnings from tensorflow itself,
     # which makes it harder to see our own warnings
     copts = ["-std=c++11", "-Wno-sign-compare", "-fvisibility=hidden"] + if_native_model([
@@ -149,6 +166,8 @@ tf_cc_shared_object(
     srcs = [
             "beam_search.cc",
             "beam_search.h",
+            "beam_search_decoder_with_word_probs.h",
+            "kenlm_beam_state.h",
             "alphabet.h",
             "trie_node.h"
            ] +
